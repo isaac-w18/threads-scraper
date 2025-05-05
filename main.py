@@ -42,9 +42,6 @@ def parse_thread(data: Dict) -> Dict:
     ] = f"https://www.threads.net/@{result['username']}/post/{result['code']}"
     return result
 
-# def analyze_emotions(threads: List[str]) -> str:
-#     return ""
-
 def find_datasets(hidden_datasets) -> dict:
      # find datasets that contain threads data
     for hidden_dataset in hidden_datasets:
@@ -62,29 +59,69 @@ def find_datasets(hidden_datasets) -> dict:
         # use our jmespath parser to reduce the dataset to the most important fields
         threads = [parse_thread(t) for thread in thread_items for t in thread]
 
-
-        # wait to scrape
-        # time_to_sleep = random.randint(2,4)
-        # time.sleep(time_to_sleep)
-
         # treat main post and replies the same
         return threads
 
            
-                # return {
-                # # the first parsed thread is the main post:
-                # "thread": threads[0],
-                # # other threads are replies:
-                # "replies": threads[1:],
-                # }
+        # return {
+        # # the first parsed thread is the main post:
+        # "thread": threads[0],
+        # # other threads are replies:
+        # "replies": threads[1:],
+        # }
+
     raise ValueError("could not find thread data in page")
 
-def scroll_until(days_old):
-    seconds_old = days_old * 86400
+def get_oldest_thread_time(landing_page_threads):
+    oldest_time = float('inf')
 
+    for thread in landing_page_threads:
+        if(thread["published_on"] is not None):
+            oldest_time = min(oldest_time, thread["published_on"])
 
+    return oldest_time
 
-def scrape_thread(url: str) -> dict:
+def scroll_until(days_old, page):
+    seconds_scroll_threshold = days_old * 86400
+    is_old_enough = False
+    
+    selector = Selector(page.content())
+    hidden_datasets = selector.css('script[type="application/json"][data-sjs]::text').getall()
+    landing_page_threads = find_datasets(hidden_datasets)
+
+    has_more_content = True
+
+    current_height = 0
+    new_height = -1
+
+    while has_more_content and not is_old_enough:
+        selector = Selector(page.content())
+        hidden_datasets = selector.css('script[type="application/json"][data-sjs]::text').getall()
+        landing_page_threads = find_datasets(hidden_datasets)
+
+        oldest_thread_time = get_oldest_thread_time(landing_page_threads)
+        
+        if(time.time() > oldest_thread_time + seconds_scroll_threshold):
+            is_old_enough = True
+            # implement logic to filter out all results older than a month
+            
+        else:
+            now = time.ctime(oldest_thread_time)
+            print(str(now))
+            time.sleep(1)
+            page.evaluate("window.scrollBy(0, window.innerHeight)")
+            page.wait_for_selector("[data-pressable-container=true]")
+
+            new_height = page.evaluate("document.documentElement.scrollHeight")
+            if new_height == current_height:
+                has_more_content = False
+            else:
+                current_height = new_height
+            print("Current Height: " + str(current_height))
+
+    return landing_page_threads
+
+def scrape_thread_by_age(url: str, days: int) -> dict:
     """Scrape Threads post and replies from a given URL"""
     with sync_playwright() as pw:
         # start Playwright browser
@@ -100,30 +137,20 @@ def scrape_thread(url: str) -> dict:
         selector = Selector(page.content())
         hidden_datasets = selector.css('script[type="application/json"][data-sjs]::text').getall()
 
-        # scroll until content is 1 month old
-
-        landing_page_threads = find_datasets(hidden_datasets)
-        
-        if landing_page_threads[-1]["published_on"] is not None:
-            published_time = landing_page_threads[-1]["published_on"]
-            # TODO: compare current time and published time, keep scrolling
-            # if they are less than a month apart
-            # upload a function
-
-            # TODO: create a different CSV for each thread scraped, then analyze with AI
-
-
-        time.sleep(1)
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_selector("[data-pressable-container=true]")
+        page_threads = scroll_until(days, page)
     
-    return landing_page_threads
+    return page_threads
 
 if __name__ == "__main__":
     oen_default_url = "https://www.threads.com/search?q=oen.tw&serp_type=default"
     keyword_oen_recent = "https://www.threads.com/search?q=oen.tw&serp_type=default&filter=recent"
     nat_geo_url = "https://www.threads.net/t/C8H5FiCtESk/"
-    threads_dict = scrape_thread(keyword_oen_recent)
+    keyword_oen_top = "https://www.threads.com/search?q=oen.tw"
+
+    ACTIVE_URL = keyword_oen_top
+    DAYS_OLD = 365
+
+    threads_dict = scrape_thread_by_age(ACTIVE_URL, DAYS_OLD)
 
     csv_file_name = "first-try-threads.csv"
     # csv_buffer = io.StringIO()
